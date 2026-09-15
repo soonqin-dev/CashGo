@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   ArrowDownLeft, ArrowUpRight, BarChart3, CalendarClock, Cloud, CloudOff,
-  Home, ListFilter, LogOut, Plus, Search, Settings, Trash2, WalletCards, X
+  Home, ListFilter, LogOut, Pencil, Plus, Search, Settings, Trash2, WalletCards, X
 } from "lucide-react";
 import { DEFAULT_DATA } from "@/lib/defaults";
 import { cloudEnabled, supabase } from "@/lib/supabase";
@@ -25,6 +25,7 @@ export default function Page() {
   const [tab, setTab] = useState<"home"|"records"|"stats"|"settings">("home");
   const [showForm, setShowForm] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [search, setSearch] = useState("");
 
   useEffect(() => {
@@ -149,6 +150,21 @@ export default function Page() {
     } else setData(d=>({...d,transactions:[{...tx,id:uid()},...d.transactions]}));
   }
 
+  async function updateTransaction(id:string, tx:Omit<Transaction,"id">) {
+    if (supabase && session) {
+      const { data: row, error } = await supabase.from("transactions")
+        .update(tx)
+        .eq("id", id)
+        .eq("user_id", session.user.id)
+        .select("id,type,amount,category_id,account_id,project_id,note,date,recurring_id")
+        .single();
+      if (error || !row) return;
+      setData(d=>({...d,transactions:d.transactions.map(t=>t.id===id?{...row,amount:Number(row.amount)} as Transaction:t)}));
+    } else {
+      setData(d=>({...d,transactions:d.transactions.map(t=>t.id===id?{...tx,id}:t)}));
+    }
+  }
+
   async function deleteTransaction(id:string){
     if (supabase && session) {
       const { error } = await supabase.from("transactions").delete().eq("id",id).eq("user_id",session.user.id); if(error)return;
@@ -205,13 +221,14 @@ export default function Page() {
         <div className="section-title"><span>最近记录</span><button onClick={()=>setTab("records")}>查看全部</button></div>
         <div className="list">{filtered.slice(0,6).map(t=><TxRow key={t.id} t={t} data={data}/>)}{!data.transactions.length&&<Empty text="还没有记录，先记第一笔吧。"/>}</div>
       </>}
-      {tab==="records"&&<><SectionHead title="记录" subtitle="管理每一笔收入与支出"/><div className="searchbox"><Search size={18}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索分类、账户、来源、备注…"/></div><div className="list roomy">{filtered.map(t=><div className="tx-wrap" key={t.id}><TxRow t={t} data={data}/><button className="icon-btn danger" onClick={()=>deleteTransaction(t.id)}><Trash2 size={17}/></button></div>)}{!filtered.length&&<Empty text="没有符合条件的记录。"/>}</div></>}
+      {tab==="records"&&<><SectionHead title="记录" subtitle="管理每一笔收入与支出"/><div className="searchbox"><Search size={18}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索分类、账户、来源、备注…"/></div><div className="list roomy">{filtered.map(t=><div className="tx-wrap" key={t.id}><TxRow t={t} data={data}/><button className="icon-btn" aria-label="编辑记录" onClick={()=>setEditingTransaction(t)}><Pencil size={17}/></button><button className="icon-btn danger" aria-label="删除记录" onClick={()=>deleteTransaction(t.id)}><Trash2 size={17}/></button></div>)}{!filtered.length&&<Empty text="没有符合条件的记录。"/>}</div></>}
       {tab==="stats"&&<><SectionHead title="统计" subtitle="看懂这个月的钱去了哪里、从哪里来"/><div className="stat-cards"><Stat title="收入" value={income} icon={<ArrowDownLeft/>}/><Stat title="支出" value={expense} icon={<ArrowUpRight/>}/></div><Breakdown title="支出分类" rows={byCategory} total={expense}/><Breakdown title="收入来源 / 项目" rows={byProject} total={income}/></>}
       {tab==="settings"&&<SettingsPage data={data} saveBudget={saveBudget} addEntity={addEntity} addCategory={addCategory} deleteEntity={deleteEntity} deleteRecurring={deleteRecurring} openRecurring={()=>setShowRecurring(true)} logout={()=>supabase?.auth.signOut()}/>} 
     </section>
     <button className="fab" onClick={()=>setShowForm(true)}><Plus size={28}/></button>
     <nav className="bottom-nav"><Nav active={tab==="home"} onClick={()=>setTab("home")} icon={<Home/>} label="首页"/><Nav active={tab==="records"} onClick={()=>setTab("records")} icon={<ListFilter/>} label="记录"/><Nav active={tab==="stats"} onClick={()=>setTab("stats")} icon={<BarChart3/>} label="统计"/><Nav active={tab==="settings"} onClick={()=>setTab("settings")} icon={<Settings/>} label="设置"/></nav>
     {showForm&&<TransactionSheet data={data} close={()=>setShowForm(false)} save={async tx=>{await addTransaction(tx);setShowForm(false)}}/>}
+    {editingTransaction&&<TransactionSheet data={data} initial={editingTransaction} close={()=>setEditingTransaction(null)} save={async tx=>{await updateTransaction(editingTransaction.id,tx);setEditingTransaction(null)}}/>}
     {showRecurring&&<RecurringSheet data={data} close={()=>setShowRecurring(false)} save={async r=>{await addRecurring(r);setShowRecurring(false)}}/>}
   </main>;
 }
@@ -222,12 +239,15 @@ function AuthScreen(){
   return <main className="auth-screen"><div className="auth-card"><div className="auth-logo">CG</div><h1>CashGo</h1><p>你的私人现金流工具</p><form onSubmit={submit}><label>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></label><label>Password<input type="password" minLength={6} required value={password} onChange={e=>setPassword(e.target.value)} placeholder="至少 6 位"/></label>{message&&<div className="form-message">{message}</div>}<button className="primary-btn" disabled={busy}>{busy?"处理中…":mode==="login"?"登录":"建立帐号"}</button></form><button className="text-btn" onClick={()=>setMode(mode==="login"?"signup":"login")}>{mode==="login"?"第一次使用？建立帐号":"已有帐号？返回登录"}</button></div></main>
 }
 
-function TransactionSheet({data,close,save}:{data:AppData;close:()=>void;save:(tx:Omit<Transaction,"id">)=>Promise<void>}){
-  const [type,setType]=useState<TxType>("expense"), [amount,setAmount]=useState(""), [note,setNote]=useState(""), [date,setDate]=useState(todayISO()), [project,setProject]=useState("");
-  const cats=data.categories.filter(c=>c.type===type), [category,setCategory]=useState(data.categories.find(c=>c.type==="expense")?.id||""); const [account,setAccount]=useState(data.accounts[0]?.id||"");
-  useEffect(()=>{setCategory(data.categories.find(c=>c.type===type)?.id||"")},[type]);
-  async function submit(e:React.FormEvent){e.preventDefault(); const n=Number(amount); if(!n||!category||!account)return; await save({type,amount:n,category_id:category,account_id:account,project_id:project||null,note:note.trim(),date,recurring_id:null});}
-  return <Sheet title="记一笔" close={close}><form onSubmit={submit}><Segmented type={type} setType={setType}/><MoneyField value={amount} setValue={setAmount}/><div className="two-col"><Select label="分类" value={category} setValue={setCategory} options={cats}/><Select label="账户" value={account} setValue={setAccount} options={data.accounts}/></div><Select label="项目 / 收入来源（可选）" value={project} setValue={setProject} options={data.projects} allowEmpty/><label className="field"><span>日期</span><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label className="field"><span>备注（可选）</span><input value={note} onChange={e=>setNote(e.target.value)} placeholder="例如：午餐、油费、项目佣金"/></label><button className="primary-btn">保存记录</button></form></Sheet>
+function TransactionSheet({data,close,save,initial}:{data:AppData;close:()=>void;save:(tx:Omit<Transaction,"id">)=>Promise<void>;initial?:Transaction}){
+  const [type,setType]=useState<TxType>(initial?.type||"expense"), [amount,setAmount]=useState(initial?String(initial.amount):""), [note,setNote]=useState(initial?.note||""), [date,setDate]=useState(initial?.date||todayISO()), [project,setProject]=useState(initial?.project_id||"");
+  const cats=data.categories.filter(c=>c.type===type), [category,setCategory]=useState(initial?.category_id||data.categories.find(c=>c.type==="expense")?.id||""); const [account,setAccount]=useState(initial?.account_id||data.accounts[0]?.id||"");
+  useEffect(()=>{
+    const valid=data.categories.some(c=>c.id===category&&c.type===type);
+    if(!valid)setCategory(data.categories.find(c=>c.type===type)?.id||"");
+  },[type,data.categories,category]);
+  async function submit(e:React.FormEvent){e.preventDefault(); const n=Number(amount); if(!n||!category||!account)return; await save({type,amount:n,category_id:category,account_id:account,project_id:project||null,note:note.trim(),date,recurring_id:initial?.recurring_id||null});}
+  return <Sheet title={initial?"编辑记录":"记一笔"} close={close}><form onSubmit={submit}><Segmented type={type} setType={setType}/><MoneyField value={amount} setValue={setAmount}/><div className="two-col"><Select label="分类" value={category} setValue={setCategory} options={cats}/><Select label="账户" value={account} setValue={setAccount} options={data.accounts}/></div><Select label="项目 / 收入来源（可选）" value={project} setValue={setProject} options={data.projects} allowEmpty/><label className="field"><span>日期</span><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label className="field"><span>备注（可选）</span><input value={note} onChange={e=>setNote(e.target.value)} placeholder="例如：午餐、油费、项目佣金"/></label><button className="primary-btn">{initial?"保存修改":"保存记录"}</button></form></Sheet>
 }
 
 function RecurringSheet({data,close,save}:{data:AppData;close:()=>void;save:(r:Omit<RecurringItem,"id">)=>Promise<void>}){
