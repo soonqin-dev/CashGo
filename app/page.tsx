@@ -26,6 +26,7 @@ export default function Page() {
   const [showForm, setShowForm] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [editingRecurring, setEditingRecurring] = useState<RecurringItem | null>(null);
   const [search, setSearch] = useState("");
 
   useEffect(() => {
@@ -179,6 +180,21 @@ export default function Page() {
     } else setData(d=>({...d,recurring:[...d.recurring,{...item,id:uid()}]}));
   }
 
+  async function updateRecurring(id:string, item:Omit<RecurringItem,"id">) {
+    if (supabase && session) {
+      const { data: row, error } = await supabase.from("recurring_items")
+        .update(item)
+        .eq("id", id)
+        .eq("user_id", session.user.id)
+        .select("id,name,type,amount,category_id,account_id,project_id,day_of_month,active")
+        .single();
+      if (error || !row) return;
+      setData(d=>({...d,recurring:d.recurring.map(r=>r.id===id?{...row,amount:Number(row.amount)} as RecurringItem:r)}));
+    } else {
+      setData(d=>({...d,recurring:d.recurring.map(r=>r.id===id?{...item,id}:r)}));
+    }
+  }
+
   async function deleteRecurring(id:string){
     if(supabase&&session){ const {error}=await supabase.from("recurring_items").delete().eq("id",id).eq("user_id",session.user.id); if(error)return; }
     setData(d=>({...d,recurring:d.recurring.filter(r=>r.id!==id)}));
@@ -223,13 +239,14 @@ export default function Page() {
       </>}
       {tab==="records"&&<><SectionHead title="记录" subtitle="管理每一笔收入与支出"/><div className="searchbox"><Search size={18}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索分类、账户、来源、备注…"/></div><div className="list roomy">{filtered.map(t=><div className="tx-wrap" key={t.id}><TxRow t={t} data={data}/><button className="icon-btn" aria-label="编辑记录" onClick={()=>setEditingTransaction(t)}><Pencil size={17}/></button><button className="icon-btn danger" aria-label="删除记录" onClick={()=>deleteTransaction(t.id)}><Trash2 size={17}/></button></div>)}{!filtered.length&&<Empty text="没有符合条件的记录。"/>}</div></>}
       {tab==="stats"&&<><SectionHead title="统计" subtitle="看懂这个月的钱去了哪里、从哪里来"/><div className="stat-cards"><Stat title="收入" value={income} icon={<ArrowDownLeft/>}/><Stat title="支出" value={expense} icon={<ArrowUpRight/>}/></div><Breakdown title="支出分类" rows={byCategory} total={expense}/><Breakdown title="收入来源 / 项目" rows={byProject} total={income}/></>}
-      {tab==="settings"&&<SettingsPage data={data} saveBudget={saveBudget} addEntity={addEntity} addCategory={addCategory} deleteEntity={deleteEntity} deleteRecurring={deleteRecurring} openRecurring={()=>setShowRecurring(true)} logout={()=>supabase?.auth.signOut()}/>} 
+      {tab==="settings"&&<SettingsPage data={data} saveBudget={saveBudget} addEntity={addEntity} addCategory={addCategory} deleteEntity={deleteEntity} deleteRecurring={deleteRecurring} openRecurring={()=>setShowRecurring(true)} editRecurring={(r:RecurringItem)=>setEditingRecurring(r)} logout={()=>supabase?.auth.signOut()}/>} 
     </section>
     <button className="fab" onClick={()=>setShowForm(true)}><Plus size={28}/></button>
     <nav className="bottom-nav"><Nav active={tab==="home"} onClick={()=>setTab("home")} icon={<Home/>} label="首页"/><Nav active={tab==="records"} onClick={()=>setTab("records")} icon={<ListFilter/>} label="记录"/><Nav active={tab==="stats"} onClick={()=>setTab("stats")} icon={<BarChart3/>} label="统计"/><Nav active={tab==="settings"} onClick={()=>setTab("settings")} icon={<Settings/>} label="设置"/></nav>
     {showForm&&<TransactionSheet data={data} close={()=>setShowForm(false)} save={async tx=>{await addTransaction(tx);setShowForm(false)}}/>}
     {editingTransaction&&<TransactionSheet data={data} initial={editingTransaction} close={()=>setEditingTransaction(null)} save={async tx=>{await updateTransaction(editingTransaction.id,tx);setEditingTransaction(null)}}/>}
     {showRecurring&&<RecurringSheet data={data} close={()=>setShowRecurring(false)} save={async r=>{await addRecurring(r);setShowRecurring(false)}}/>}
+    {editingRecurring&&<RecurringSheet data={data} initial={editingRecurring} close={()=>setEditingRecurring(null)} save={async r=>{await updateRecurring(editingRecurring.id,r);setEditingRecurring(null)}}/>}
   </main>;
 }
 
@@ -250,21 +267,24 @@ function TransactionSheet({data,close,save,initial}:{data:AppData;close:()=>void
   return <Sheet title={initial?"编辑记录":"记一笔"} close={close}><form onSubmit={submit}><Segmented type={type} setType={setType}/><MoneyField value={amount} setValue={setAmount}/><div className="two-col"><Select label="分类" value={category} setValue={setCategory} options={cats}/><Select label="账户" value={account} setValue={setAccount} options={data.accounts}/></div><Select label="项目 / 收入来源（可选）" value={project} setValue={setProject} options={data.projects} allowEmpty/><label className="field"><span>日期</span><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label className="field"><span>备注（可选）</span><input value={note} onChange={e=>setNote(e.target.value)} placeholder="例如：午餐、油费、项目佣金"/></label><button className="primary-btn">{initial?"保存修改":"保存记录"}</button></form></Sheet>
 }
 
-function RecurringSheet({data,close,save}:{data:AppData;close:()=>void;save:(r:Omit<RecurringItem,"id">)=>Promise<void>}){
-  const [name,setName]=useState(""),[type,setType]=useState<TxType>("expense"),[amount,setAmount]=useState(""),[day,setDay]=useState("1"),[project,setProject]=useState("");
-  const cats=data.categories.filter(c=>c.type===type), [category,setCategory]=useState(data.categories.find(c=>c.type==="expense")?.id||""), [account,setAccount]=useState(data.accounts[0]?.id||"");
-  useEffect(()=>{setCategory(data.categories.find(c=>c.type===type)?.id||"")},[type]);
-  async function submit(e:React.FormEvent){e.preventDefault();const n=Number(amount),d=Math.min(31,Math.max(1,Number(day)||1));if(!name.trim()||!n||!category||!account)return;await save({name:name.trim(),type,amount:n,category_id:category,account_id:account,project_id:project||null,day_of_month:d,active:true});}
-  return <Sheet title="新增固定月费" close={close}><form onSubmit={submit}><Segmented type={type} setType={setType}/><label className="field"><span>名称</span><input value={name} onChange={e=>setName(e.target.value)} placeholder="例如：Spotify / 房租"/></label><MoneyField value={amount} setValue={setAmount}/><div className="two-col"><Select label="分类" value={category} setValue={setCategory} options={cats}/><Select label="账户" value={account} setValue={setAccount} options={data.accounts}/></div><Select label="项目 / 来源（可选）" value={project} setValue={setProject} options={data.projects} allowEmpty/><label className="field"><span>每月日期</span><input type="number" min="1" max="31" value={day} onChange={e=>setDay(e.target.value)}/></label><button className="primary-btn">保存固定项目</button></form></Sheet>
+function RecurringSheet({data,close,save,initial}:{data:AppData;close:()=>void;save:(r:Omit<RecurringItem,"id">)=>Promise<void>;initial?:RecurringItem}){
+  const [name,setName]=useState(initial?.name||""),[type,setType]=useState<TxType>(initial?.type||"expense"),[amount,setAmount]=useState(initial?String(initial.amount):""),[day,setDay]=useState(initial?String(initial.day_of_month):"1"),[project,setProject]=useState(initial?.project_id||"");
+  const cats=data.categories.filter(c=>c.type===type), [category,setCategory]=useState(initial?.category_id||data.categories.find(c=>c.type==="expense")?.id||""), [account,setAccount]=useState(initial?.account_id||data.accounts[0]?.id||"");
+  useEffect(()=>{
+    const valid=data.categories.some(c=>c.id===category&&c.type===type);
+    if(!valid)setCategory(data.categories.find(c=>c.type===type)?.id||"");
+  },[type,data.categories,category]);
+  async function submit(e:React.FormEvent){e.preventDefault();const n=Number(amount),d=Math.min(31,Math.max(1,Number(day)||1));if(!name.trim()||!n||!category||!account)return;await save({name:name.trim(),type,amount:n,category_id:category,account_id:account,project_id:project||null,day_of_month:d,active:initial?.active??true});}
+  return <Sheet title={initial?"编辑固定项目":"新增固定月费 / 收入"} close={close}><form onSubmit={submit}><Segmented type={type} setType={setType}/><label className="field"><span>名称</span><input value={name} onChange={e=>setName(e.target.value)} placeholder="例如：Spotify / 房租 / 固定佣金"/></label><MoneyField value={amount} setValue={setAmount}/><div className="two-col"><Select label="分类" value={category} setValue={setCategory} options={cats}/><Select label="账户" value={account} setValue={setAccount} options={data.accounts}/></div><Select label="项目 / 来源（可选）" value={project} setValue={setProject} options={data.projects} allowEmpty/><label className="field"><span>每月日期</span><input type="number" min="1" max="31" value={day} onChange={e=>setDay(e.target.value)}/></label><button className="primary-btn">{initial?"保存修改":"保存固定项目"}</button></form></Sheet>
 }
 
-function SettingsPage({data,saveBudget,addEntity,addCategory,deleteEntity,deleteRecurring,openRecurring,logout}:any){
+function SettingsPage({data,saveBudget,addEntity,addCategory,deleteEntity,deleteRecurring,openRecurring,editRecurring,logout}:any){
   const [account,setAccount]=useState(""),[project,setProject]=useState(""),[cat,setCat]=useState(""),[catType,setCatType]=useState<TxType>("expense");
   return <><SectionHead title="设置" subtitle="把 CashGo 调整成最适合你的样子"/><div className="panel settings"><label>每月支出预算</label><div className="money-input"><span>RM</span><input type="number" value={data.monthlyBudget} onChange={e=>saveBudget(Number(e.target.value)||0)}/></div></div>
     <ManageBox title="账户" placeholder="新增账户，例如 Public Bank" value={account} setValue={setAccount} onAdd={()=>{addEntity("accounts",account);setAccount("")}} items={data.accounts} onDelete={(id:string)=>deleteEntity("accounts",id)}/>
     <div className="panel"><h2>分类</h2><div className="segmented compact"><button className={catType==="expense"?"active":""} onClick={()=>setCatType("expense")}>支出</button><button className={catType==="income"?"active":""} onClick={()=>setCatType("income")}>收入</button></div><div className="add-row"><input value={cat} onChange={e=>setCat(e.target.value)} placeholder="新增分类"/><button onClick={()=>{addCategory(cat,catType);setCat("")}}><Plus size={18}/></button></div><TagList items={data.categories.filter((c:Category)=>c.type===catType)} onDelete={(id:string)=>deleteEntity("categories",id)}/></div>
     <ManageBox title="项目 / 收入来源" placeholder="例如 Music / Renovation" value={project} setValue={setProject} onAdd={()=>{addEntity("projects",project);setProject("")}} items={data.projects} onDelete={(id:string)=>deleteEntity("projects",id)}/>
-    <div className="panel"><div className="panel-title-row"><div><h2>固定月费 / 固定收入</h2><p>到期后，打开 CashGo 会自动补入当月记录。</p></div><button className="small-primary" onClick={openRecurring}><Plus size={16}/>新增</button></div>{data.recurring.length?data.recurring.map((r:RecurringItem)=><div className="recurring-row" key={r.id}><CalendarClock size={18}/><div><strong>{r.name}</strong><span>每月 {r.day_of_month} 日 · {money(r.amount)}</span></div><button className="icon-btn danger" onClick={()=>deleteRecurring(r.id)}><Trash2 size={16}/></button></div>):<Empty text="还没有固定项目。"/>}</div>
+    <div className="panel"><div className="panel-title-row"><div><h2>固定月费 / 固定收入</h2><p>到期后，打开 CashGo 会自动补入当月记录。</p></div><button className="small-primary" onClick={openRecurring}><Plus size={16}/>新增</button></div>{data.recurring.length?data.recurring.map((r:RecurringItem)=><div className="recurring-row" key={r.id}><CalendarClock size={18}/><div><strong>{r.name}</strong><span>每月 {r.day_of_month} 日 · {money(r.amount)}</span></div><button className="icon-btn" aria-label="编辑固定项目" onClick={()=>editRecurring(r)}><Pencil size={16}/></button><button className="icon-btn danger" aria-label="删除固定项目" onClick={()=>deleteRecurring(r.id)}><Trash2 size={16}/></button></div>):<Empty text="还没有固定项目。"/>}</div>
     {cloudEnabled&&<button className="logout-btn" onClick={logout}><LogOut size={18}/>退出登录</button>}
     <p className="footnote">{cloudEnabled?"数据已使用 Supabase 云端同步，并同时保留浏览器缓存。":"目前没有配置 Supabase，因此使用本机缓存。完成 .env.local 配置后会自动切换云端模式。"}</p></>;
 }
